@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "load-profit-doctor"
+version = "1.0.0"
+description = "Score truck loads for profit before booking them"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+[project.scripts]
+load-profit-doctor = "load_profit_doctor:main_entry"
+
+[tool.setuptools]
+py-modules = ["load_profit_doctor"]
