@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>load-profit-doctor · AamirTechs Tools</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f6f8fb; color: #1c2733; }
+  header { background: #0b1f3a; color: #ffffff; padding: 28px 20px 22px; border-bottom: 4px solid #d4a72c; }
+  header .wrap { max-width: 960px; margin: 0 auto; }
+  header h1 { margin: 0 0 6px; font-size: 28px; }
+  header p { margin: 0; color: #c9d6e8; font-size: 15px; }
+  main { max-width: 960px; margin: 24px auto 40px; padding: 0 16px; }
+  .card { background: #ffffff; border-radius: 12px; box-shadow: 0 2px 10px rgba(11, 31, 58, 0.08); padding: 22px; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; font-size: 14px; }
+  label:first-child { margin-top: 0; }
+  textarea { width: 100%; min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; padding: 10px; border: 1px solid #c8d2de; border-radius: 8px; background: #fbfcfe; }
+  input[type="text"] { width: 100%; padding: 9px 10px; border: 1px solid #c8d2de; border-radius: 8px; font-size: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; }
+  .row > div { flex: 1 1 160px; }
+  .buttons { margin: 20px 0 6px; display: flex; flex-wrap: wrap; gap: 10px; }
+  button { border: 0; border-radius: 8px; padding: 11px 20px; font-size: 15px; cursor: pointer; }
+  #run { background: #0b1f3a; color: #ffffff; font-weight: 600; }
+  #run:hover { background: #143058; }
+  .secondary { background: #eef2f7; color: #0b1f3a; border: 1px solid #c8d2de; }
+  .secondary:hover { background: #e2eaf3; }
+  #download { background: #d4a72c; color: #0b1f3a; font-weight: 600; }
+  pre { background: #0b1f3a; color: #e8eef6; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; min-height: 60px; white-space: pre; }
+  footer { max-width: 960px; margin: 0 auto 30px; padding: 0 16px; color: #5a6a7d; font-size: 13px; text-align: center; }
+  footer a { color: #0b1f3a; }
+  .hint { font-weight: 400; color: #5a6a7d; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>load-profit-doctor</h1>
+    <p>Score truck loads for profit after deadhead, tolls, dispatch fees, and factoring fees.</p>
+  </div>
+</header>
+<main>
+  <div class="card">
+    <label for="file">Loads JSON file <span class="hint">(or paste the loads JSON below)</span></label>
+    <input type="file" id="file" accept=".json,application/json">
+    <label for="input">Loads JSON</label>
+    <textarea id="input" placeholder="Paste loads JSON here, or load the sample."></textarea>
+    <div class="row">
+      <div>
+        <label for="cpm">Cost per mile <span class="hint">(CLI --cost-per-mile)</span></label>
+        <input type="text" id="cpm" value="2.34">
+      </div>
+      <div>
+        <label for="minppm">Min profit per mile <span class="hint">(CLI --min-profit-per-mile)</span></label>
+        <input type="text" id="minppm" value="0.50">
+      </div>
+      <div>
+        <label for="dispatch">Dispatch fee % <span class="hint">(CLI --dispatch-fee)</span></label>
+        <input type="text" id="dispatch" value="0">
+      </div>
+      <div>
+        <label for="factoring">Factoring fee % <span class="hint">(CLI --factoring-fee)</span></label>
+        <input type="text" id="factoring" value="0">
+      </div>
+    </div>
+    <div class="buttons">
+      <button id="run" type="button">Run</button>
+      <button id="sample" type="button" class="secondary">Load sample</button>
+      <button id="download" type="button">Download report</button>
+    </div>
+    <pre id="output">Your load profit report will appear here.</pre>
+  </div>
+</main>
+<footer>
+  <p>Built by AamirTechs · <a href="https://aamirtechs.github.io/">All tools</a> · <a href="https://github.com/aamirtechs/load-profit-doctor">Source</a></p>
+  <p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+
+<script id="core">
+"use strict";
+/* Core logic: a faithful port of load_profit_doctor.py.
+   Pure functions only, no DOM access.
+   window.runTool(inputText, options) -> report string.
+   inputText is the loads JSON. options (all strings, "" means the CLI default):
+     costPerMile      CLI --cost-per-mile, default 2.34
+     minProfitPerMile CLI --min-profit-per-mile, default 0.50
+     dispatchFee      CLI --dispatch-fee (percent), default 0
+     factoringFee     CLI --factoring-fee (percent), default 0
+*/
+/* ---- Minimal Decimal with Python decimal semantics ----
+   value = (neg ? -1 : 1) * coef * 10^exp, coef a non-negative BigInt.
+   add/sub keep the smaller exponent, mul adds exponents, div follows
+   the Python default context (28 significant digits, half even), and
+   quantize supports ROUND_HALF_UP and ROUND_HALF_EVEN. */
+function Dec(neg, coef, exp) { this.neg = neg; this.coef = coef; this.exp = exp; }
+Dec.ZERO = new Dec(false, 0n, 0);
+Dec.parse = function (text) {
+  var s = String(text).trim().replace(/_/g, "");
+  var neg = false;
+  if (s.charAt(0) === "+") { s = s.slice(1); }
+  else if (s.charAt(0) === "-") { neg = true; s = s.slice(1); }
+  var expPart = 0;
+  var ei = s.search(/[eE]/);
+  if (ei >= 0) { expPart = parseInt(s.slice(ei + 1), 10); s = s.slice(0, ei); }
+  var digits, exp;
+  var di = s.indexOf(".");
+  if (di >= 0) { digits = s.slice(0, di) + s.slice(di + 1); exp = expPart - (s.length - di - 1); }
+  else { digits = s; exp = expPart; }
+  digits = digits.replace(/^0+(?=\d)/, "");
+  if (digits === "") { digits = "0"; }
+  return new Dec(neg, BigInt(digits), exp);
+};
+Dec.isValidText = function (text) {
+  return /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(String(text).trim().replace(/_/g, ""));
+};
+Dec.prototype.clone = function () { return new Dec(this.neg, this.coef, this.exp); };
+Dec.prototype.isZero = function () { return this.coef === 0n; };
+Dec.prototype.negated = function () { return new Dec(!this.neg, this.coef, this.exp); };
+Dec.prototype.cmp = function (other) {
+  var s1 = this.isZero() ? 0 : (this.neg ? -1 : 1);
+  var s2 = other.isZero() ? 0 : (other.neg ? -1 : 1);
+  if (s1 !== s2) { return s1 < s2 ? -1 : 1; }
+  if (s1 === 0) { return 0; }
+  var e = Math.min(this.exp, other.exp);
+  var c1 = this.coef * (10n ** BigInt(this.exp - e));
+  var c2 = other.coef * (10n ** BigInt(other.exp - e));
+  var c = c1 < c2 ? -1 : (c1 > c2 ? 1 : 0);
+  return s1 === 1 ? c : -c;
+};
+Dec.prototype.add = function (other) {
+  var e = Math.min(this.exp, other.exp);
+  var c1 = this.coef * (10n ** BigInt(this.exp - e)) * (this.neg ? -1n : 1n);
+  var c2 = other.coef * (10n ** BigInt(other.exp - e)) * (other.neg ? -1n : 1n);
+  var sum = c1 + c2;
+  var neg = sum < 0n;
+  return new Dec(neg, neg ? -sum : sum, e);
+};
+Dec.prototype.sub = function (other) { return this.add(other.negated()); };
+Dec.prototype.mul = function (other) {
+  return new Dec(this.neg !== other.neg, this.coef * other.coef, this.exp + other.exp);
+};
+Dec.prototype.div = function (other) {
+  if (other.isZero()) { throw new Error("Division by zero"); }
+  if (this.isZero()) { return new Dec(this.neg !== other.neg, 0n, 0); }
+  var neg = this.neg !== other.neg;
+  var num = this.coef, den = other.coef;
+  var numDigits = num.toString().length, denDigits = den.toString().length;
+  var s = 29 - (numDigits - denDigits);
+  var scaledNum, scaledDen, q, r;
+  function attempt(shift) {
+    var n = num, d = den;
+    if (shift >= 0) { n = n * (10n ** BigInt(shift)); } else { d = d * (10n ** BigInt(-shift)); }
+    return [n / d, n % d, n, d];
+  }
+  var res = attempt(s);
+  q = res[0]; r = res[1];
+  while (q.toString().length > 29) { s -= 1; res = attempt(s); q = res[0]; r = res[1]; }
+  while (q.toString().length < 29) { s += 1; res = attempt(s); q = res[0]; r = res[1]; }
+  var denUsed = res[3];
+  var lastDigit = q % 10n;
+  var rest = q / 10n;
+  var up = false;
+  if (lastDigit > 5n) { up = true; }
+  else if (lastDigit === 5n) { if (r > 0n) { up = true; } else if (rest % 2n === 1n) { up = true; } }
+  if (up) { rest += 1n; }
+  var exp = (this.exp - other.exp) - s + 1;
+  if (rest.toString().length > 28) { rest = rest / 10n; exp += 1; }
+  while (rest !== 0n && rest % 10n === 0n) { rest = rest / 10n; exp += 1; }
+  return new Dec(neg, rest, exp);
+};
+Dec.prototype.quantize = function (targetExp, halfUp) {
+  var diff = this.exp - targetExp;
+  if (diff === 0) { return this.clone(); }
+  if (diff > 0) { return new Dec(this.neg, this.coef * (10n ** BigInt(diff)), targetExp); }
+  var divisor = 10n ** BigInt(-diff);
+  var q = this.coef / divisor;
+  var r = this.coef % divisor;
+  var twice = r * 2n;
+  var up = false;
+  if (halfUp) { up = twice >= divisor; }
+  else { up = twice > divisor || (twice === divisor && q % 2n === 1n); }
+  if (up) { q += 1n; }
+  return new Dec(this.neg, q, targetExp);
+};
+Dec.prototype.toString = function () {
+  var digits = this.coef.toString();
+  var sign = this.neg ? "-" : "";
+  var adjusted = this.exp + digits.length - 1;
+  if (this.exp <= 0 && adjusted >= -6) {
+    if (this.exp === 0) { return sign + digits; }
+    var pointPos = digits.length + this.exp;
+    if (pointPos > 0) { return sign + digits.slice(0, pointPos) + "." + digits.slice(pointPos); }
+    return sign + "0." + "0".repeat(-pointPos) + digits;
+  }
+  var mantissa = digits.length > 1 ? digits.charAt(0) + "." + digits.slice(1) : digits;
+  return sign + mantissa + "E" + (adjusted >= 0 ? "+" : "") + adjusted;
+};
+/* Python f"{amount:.2f}" for a Decimal: rounds half even to 2 places. */
+function fmt2(d) {
+  var q = d.quantize(-2, false);
+  var digits = q.coef.toString();
+  var sign = q.neg ? "-" : "";
+  var pointPos = digits.length - 2;
+  if (pointPos > 0) { return sign + digits.slice(0, pointPos) + "." + digits.slice(pointPos); }
+  return sign + "0." + "0".repeat(-pointPos) + digits;
+}
+
+
+function LoadError(message) { this.message = message; }
+LoadError.prototype = Object.create(Error.prototype);
+
+function pyRepr(v) {
+  if (v === null || v === undefined) { return "None"; }
+  if (v === true) { return "True"; }
+  if (v === false) { return "False"; }
+  if (typeof v === "string") {
+    return "'" + v.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t") + "'";
+  }
+  if (typeof v === "number") { return String(v); }
+  if (Array.isArray(v)) { return "[" + v.map(pyRepr).join(", ") + "]"; }
+  return String(v);
+}
+
+var HUNDRED = Dec.parse("100");
+
+function toDecimal(value, field, loadId) {
+  if (typeof value === "boolean") {
+    throw new LoadError("load " + loadId + ": " + field + " must be a number, got " + pyRepr(value));
+  }
+  if (typeof value === "number") { return Dec.parse(String(value)); }
+  if (typeof value === "string") {
+    var text = value.trim().replace(/\$/g, "").replace(/,/g, "");
+    if (!text) { throw new LoadError("load " + loadId + ": " + field + " is empty"); }
+    if (!Dec.isValidText(text)) {
+      throw new LoadError("load " + loadId + ": " + field + " is not a number: " + pyRepr(value));
+    }
+    return Dec.parse(text);
+  }
+  throw new LoadError("load " + loadId + ": " + field + " must be a number, got " + pyRepr(value));
+}
+
+function money(d) { return d.quantize(-2, true); }
+
+function loadIdOf(load, index) {
+  var keys = ["id", "load_id", "load_number"];
+  for (var i = 0; i < keys.length; i++) {
+    var v = (load !== null && typeof load === "object") ? load[keys[i]] : undefined;
+    if (v !== null && v !== undefined && v !== "") { return String(v); }
+  }
+  return "load #" + (index + 1);
+}
+
+function present(load, key) {
+  var v = load[key];
+  return v !== null && v !== undefined && v !== "";
+}
+
+function evaluateLoad(load, index, defaults) {
+  var loadId = loadIdOf(load, index);
+  try {
+    if (load === null || typeof load !== "object" || Array.isArray(load)) {
+      throw new LoadError("load " + loadId + ": entry is not an object");
+    }
+    var loaded = toDecimal("loaded_miles" in load ? load.loaded_miles : 0, "loaded_miles", loadId);
+    var deadhead = toDecimal("deadhead_miles" in load ? load.deadhead_miles : 0, "deadhead_miles", loadId);
+    if (loaded.cmp(Dec.ZERO) < 0) { throw new LoadError("load " + loadId + ": loaded_miles is negative"); }
+    if (deadhead.cmp(Dec.ZERO) < 0) { throw new LoadError("load " + loadId + ": deadhead_miles is negative"); }
+    var totalMiles = loaded.add(deadhead);
+    if (totalMiles.cmp(Dec.ZERO) <= 0) { throw new LoadError("load " + loadId + ": total miles must be above zero"); }
+    if (loaded.cmp(Dec.ZERO) <= 0) { throw new LoadError("load " + loadId + ": loaded_miles must be above zero"); }
+
+    var revenue = null;
+    if (present(load, "gross_pay")) {
+      revenue = toDecimal(load.gross_pay, "gross_pay", loadId);
+    } else {
+      var parts = [];
+      ["linehaul", "fuel_surcharge", "accessorials"].forEach(function (key) {
+        if (present(load, key)) { parts.push(toDecimal(load[key], key, loadId)); }
+      });
+      if (parts.length) {
+        revenue = Dec.ZERO.clone();
+        parts.forEach(function (p) { revenue = revenue.add(p); });
+      }
+    }
+    if (revenue === null) { throw new LoadError("load " + loadId + ": needs gross_pay or linehaul"); }
+    if (revenue.cmp(Dec.ZERO) < 0) { throw new LoadError("load " + loadId + ": revenue is negative"); }
+
+    var costPerMile = defaults.cost_per_mile;
+    if (present(load, "cost_per_mile")) { costPerMile = toDecimal(load.cost_per_mile, "cost_per_mile", loadId); }
+    if (costPerMile.cmp(Dec.ZERO) < 0) { throw new LoadError("load " + loadId + ": cost_per_mile is negative"); }
+
+    var tolls = Dec.ZERO.clone();
+    if (present(load, "tolls")) { tolls = toDecimal(load.tolls, "tolls", loadId); }
+    if (tolls.cmp(Dec.ZERO) < 0) { throw new LoadError("load " + loadId + ": tolls are negative"); }
+
+    var dispatchPct = defaults.dispatch_fee_percent;
+    if (present(load, "dispatch_fee_percent")) { dispatchPct = toDecimal(load.dispatch_fee_percent, "dispatch_fee_percent", loadId); }
+    var factoringPct = defaults.factoring_percent;
+    if (present(load, "factoring_percent")) { factoringPct = toDecimal(load.factoring_percent, "factoring_percent", loadId); }
+    [["dispatch_fee_percent", dispatchPct], ["factoring_percent", factoringPct]].forEach(function (pair) {
+      if (pair[1].cmp(Dec.ZERO) < 0 || pair[1].cmp(HUNDRED) > 0) {
+        throw new LoadError("load " + loadId + ": " + pair[0] + " must be 0 to 100");
+      }
+    });
+
+    var hours = null;
+    if (present(load, "hours")) {
+      hours = toDecimal(load.hours, "hours", loadId);
+      if (hours.cmp(Dec.ZERO) <= 0) { throw new LoadError("load " + loadId + ": hours must be above zero"); }
+    }
+
+    var operatingCost = costPerMile.mul(totalMiles);
+    var dispatchFee = revenue.mul(dispatchPct).div(HUNDRED);
+    var factoringFee = revenue.mul(factoringPct).div(HUNDRED);
+    var net = revenue.sub(operatingCost).sub(tolls).sub(dispatchFee).sub(factoringFee);
+    var profitPerTotalMile = net.div(totalMiles);
+    var profitPerLoadedMile = net.div(loaded);
+    var revenuePerTotalMile = revenue.div(totalMiles);
+    var revenuePerLoadedMile = revenue.div(loaded);
+    var breakEven = operatingCost.add(tolls).add(dispatchFee).add(factoringFee).div(loaded);
+    var margin = revenue.isZero() ? Dec.ZERO.clone() : net.div(revenue).mul(HUNDRED);
+    var hourly = hours !== null ? net.div(hours) : null;
+
+    var minProfit = defaults.min_profit_per_mile;
+    var verdict;
+    if (profitPerTotalMile.cmp(minProfit) >= 0) { verdict = "ACCEPT"; }
+    else if (profitPerTotalMile.cmp(Dec.ZERO) >= 0) { verdict = "MARGINAL"; }
+    else { verdict = "REJECT"; }
+
+    var record = {
+      id: loadId,
+      loaded_miles: loaded,
+      deadhead_miles: deadhead,
+      total_miles: totalMiles,
+      deadhead_percent: money(deadhead.div(totalMiles).mul(HUNDRED)),
+      revenue: money(revenue),
+      operating_cost: money(operatingCost),
+      tolls: money(tolls),
+      dispatch_fee: money(dispatchFee),
+      factoring_fee: money(factoringFee),
+      net_profit: money(net),
+      profit_per_total_mile: money(profitPerTotalMile),
+      profit_per_loaded_mile: money(profitPerLoadedMile),
+      revenue_per_total_mile: money(revenuePerTotalMile),
+      revenue_per_loaded_mile: money(revenuePerLoadedMile),
+      break_even_loaded_rate: money(breakEven),
+      margin_percent: money(margin),
+      verdict: verdict
+    };
+    if (hourly !== null) {
+      record.effective_hourly_rate = money(hourly);
+      record.hours = hours;
+    }
+    if (present(load, "lane")) { record.lane = String(load.lane); }
+    if (present(load, "equipment")) { record.equipment = String(load.equipment); }
+    return [record, null];
+  } catch (e) {
+    if (e instanceof LoadError) { return [null, e.message]; }
+    throw e;
+  }
+}
+
+function evaluate(data, defaults) {
+  var loads;
+  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+    loads = data.loads;
+    if (loads === null || loads === undefined) { throw new LoadError("JSON object needs a 'loads' list"); }
+  } else if (Array.isArray(data)) {
+    loads = data;
+  } else {
+    throw new LoadError("input must be a JSON list or an object with a 'loads' list");
+  }
+  if (!Array.isArray(loads)) { throw new LoadError("'loads' must be a list"); }
+
+  var records = [];
+  var errors = [];
+  loads.forEach(function (load, index) {
+    var res = evaluateLoad(load, index, defaults);
+    if (res[1] !== null) { errors.push(res[1]); } else { records.push(res[0]); }
+  });
+  records.sort(function (a, b) { return b.profit_per_total_mile.cmp(a.profit_per_total_mile); });
+  records.forEach(function (r, i) { r.rank = i + 1; });
+
+  var totalRevenue = new Dec(false, 0n, -2);
+  var totalNet = new Dec(false, 0n, -2);
+  var totalMiles = Dec.ZERO.clone();
+  records.forEach(function (r) {
+    totalRevenue = totalRevenue.add(r.revenue);
+    totalNet = totalNet.add(r.net_profit);
+    totalMiles = totalMiles.add(r.total_miles);
+  });
+  var totals = {
+    loads: records.length,
+    errors: errors.length,
+    total_revenue: money(totalRevenue),
+    total_net_profit: money(totalNet),
+    total_miles: totalMiles,
+    accept: records.filter(function (r) { return r.verdict === "ACCEPT"; }).length,
+    marginal: records.filter(function (r) { return r.verdict === "MARGINAL"; }).length,
+    reject: records.filter(function (r) { return r.verdict === "REJECT"; }).length
+  };
+  if (records.length) {
+    totals.average_profit_per_total_mile = money(totalNet.div(totalMiles));
+    totals.best_load = records[0].id;
+    totals.worst_load = records[records.length - 1].id;
+  }
+  return { loads: records, errors: errors, totals: totals };
+}
+
+function decStr(d) { return d.toString(); }
+
+function formatText(report) {
+  var lines = [];
+  report.loads.forEach(function (r) {
+    var lane = ("lane" in r) ? " (" + r.lane + ")" : "";
+    var costs = r.operating_cost.add(r.tolls).add(r.dispatch_fee).add(r.factoring_fee);
+    var line = "#" + r.rank + " " + r.id + lane + ": " +
+      decStr(r.loaded_miles) + " mi loaded + " + decStr(r.deadhead_miles) + " mi deadhead, " +
+      "revenue $" + decStr(r.revenue) + ", costs $" + decStr(costs) + ", net $" + decStr(r.net_profit) + ", " +
+      "$" + decStr(r.profit_per_total_mile) + "/mi total, $" + decStr(r.profit_per_loaded_mile) + "/mi loaded, " +
+      "margin " + decStr(r.margin_percent) + "%, break-even $" + decStr(r.break_even_loaded_rate) + "/mi, " + r.verdict;
+    if ("effective_hourly_rate" in r) {
+      line += ", $" + decStr(r.effective_hourly_rate) + "/hr over " + decStr(r.hours) + " h";
+    }
+    lines.push(line);
+  });
+  var t = report.totals;
+  lines.push("");
+  lines.push("Loads: " + t.loads + ", revenue $" + decStr(t.total_revenue) +
+    ", net profit $" + decStr(t.total_net_profit) + ", total miles " + decStr(t.total_miles) +
+    ", avg profit $" + (t.average_profit_per_total_mile ? decStr(t.average_profit_per_total_mile) : "0.00") + "/mi, " +
+    "ACCEPT " + t.accept + ", MARGINAL " + t.marginal + ", REJECT " + t.reject);
+  if (t.loads) { lines.push("Best: " + t.best_load + ", worst: " + t.worst_load); }
+  report.errors.forEach(function (e) { lines.push("ERROR: " + e); });
+  return lines.join("\n") + "\n";
+}
+
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var pairs = [
+    ["costPerMile", "cost_per_mile", "2.34", "cost-per-mile"],
+    ["minProfitPerMile", "min_profit_per_mile", "0.50", "min-profit-per-mile"],
+    ["dispatchFee", "dispatch_fee_percent", "0", "dispatch-fee"],
+    ["factoringFee", "factoring_percent", "0", "factoring-fee"]
+  ];
+  var defaults = {};
+  for (var i = 0; i < pairs.length; i++) {
+    var optKey = pairs[i][0], defKey = pairs[i][1], defVal = pairs[i][2], cliName = pairs[i][3];
+    var raw = options[optKey];
+    if (raw === null || raw === undefined || String(raw).trim() === "") {
+      defaults[defKey] = Dec.parse(defVal);
+    } else if (Dec.isValidText(String(raw).trim())) {
+      defaults[defKey] = Dec.parse(String(raw).trim());
+    } else {
+      return "ERROR: --" + cliName + " is not a number: " + pyRepr(String(raw)) + "\n";
+    }
+  }
+  var data;
+  try { data = JSON.parse(inputText || ""); }
+  catch (e) { return "ERROR: input is not valid JSON: " + e.message + "\n"; }
+  var report;
+  try { report = evaluate(data, defaults); }
+  catch (e) {
+    if (e instanceof LoadError) { return "ERROR: " + e.message + "\n"; }
+    throw e;
+  }
+  return formatText(report);
+};
+</script>
+
+<script>
+"use strict";
+var SAMPLE_LOADS = `[{"deadhead_miles":60,"dispatch_fee_percent":5,"equipment":"dry van","factoring_percent":3,"gross_pay":2400,"hours":12,"id":"L-101","lane":"Dallas, TX to Oklahoma City, OK","loaded_miles":500,"tolls":25},{"deadhead_miles":200,"equipment":"dry van","fuel_surcharge":200,"hours":20,"id":"L-102","lane":"Houston, TX to Atlanta, GA","linehaul":1900,"loaded_miles":800},{"deadhead_miles":20,"dispatch_fee_percent":5,"equipment":"dry van","gross_pay":1100,"hours":8,"id":"L-103","lane":"Fort Worth, TX to Austin, TX","loaded_miles":300},{"deadhead_miles":150,"equipment":"reefer","factoring_percent":3,"gross_pay":1950,"hours":16,"id":"L-104","lane":"El Paso, TX to Phoenix, AZ","loaded_miles":650,"tolls":40}]`;
+var inputEl = document.getElementById("input");
+var outputEl = document.getElementById("output");
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files[0];
+  if (!f) { return; }
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result); };
+  reader.readAsText(f);
+});
+function loadSample() { inputEl.value = SAMPLE_LOADS; }
+document.getElementById("sample").addEventListener("click", loadSample);
+document.getElementById("run").addEventListener("click", function () {
+  var report = window.runTool(inputEl.value, {
+    costPerMile: document.getElementById("cpm").value,
+    minProfitPerMile: document.getElementById("minppm").value,
+    dispatchFee: document.getElementById("dispatch").value,
+    factoringFee: document.getElementById("factoring").value
+  });
+  outputEl.textContent = report.replace(/\n$/, "");
+});
+document.getElementById("download").addEventListener("click", function () {
+  var blob = new Blob([outputEl.textContent + "\n"], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "load-profit-doctor-report.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+loadSample();
+</script>
+</body>
+</html>
